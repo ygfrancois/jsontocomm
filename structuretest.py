@@ -3,7 +3,10 @@ import json
 MeshName = []
 AssignMaterialName =[]
 ModelName = []
-dictpartproperty = {}
+BoundaryConditionsName = []
+# 两个字典各自的对应关系对于一个模型是不变的，所以可以设为全局变量，方便调用
+dictpart_property = {}
+dictproperty_type = {}
 
 def readdata(fpath):
     f = open(fpath, 'r')
@@ -36,17 +39,20 @@ class DefineMaterial(object):
     def output(self):
         for i in range(0, len(self.data)):
             # 把材料的名称读进materialname，此处还有材料id没用上，后面索引可能会用
-            # self.materialname.append(self.data[i]['name']) 注：material.json里的材料名称不一定能被python接受，所以需要用id
+            # self.materialname.append(self.data[i]['name'])
+            # 注：material.json里的材料名称不一定能被python接受，所以需要用id
             self.material_id.append(self.data[i]['id'])
             if self.data[i]['attributes'].keys() == ["ELASTIC_MODULUS", "POISSON_RATIO"]:
                 self.typemat.append("ELAS")
-                yield '%s=DEFI_MATERIAU(%s=_F(E=%f,NU=%f,),);' % \
-                      (self.material_id[i], self.typemat[i], self.data[i]['attributes'].values()[0],
-                       self.data[i]['attributes'].values()[1])
+            yield '%s=DEFI_MATERIAU(%s=_F(E=%f,NU=%f,),);' % \
+                (self.material_id[i], self.typemat[i], self.data[i]['attributes'].values()[0],
+                    self.data[i]['attributes'].values()[1])
 
 
 # 将定义的材料施加到对应的mesh上，对应aster关键词为AFFE_MATERIAU。
 # 对应的.json数据为parts.json里的"material"和"id"。
+###############################
+# 此处将材料加到mesh的定义，会用在后面单元特征添加和最后计算的地方（AFFE_CARA_ELEM，MECA_STATIQUE）
 class AssignMaterial(object):
     def __init__(self, fpathparts, assignmaterialname):
         # 将readmesh里设置的meshname引入
@@ -63,37 +69,71 @@ class AssignMaterial(object):
             self.material_id.append(str(self.data[i]['material']))
             self.part_id.append(str(self.data[i]['id']))
             # 将part的id和property的id用字典写入，方便在assignmodel里面使用
-            dictpartproperty[self.part_id[i]] = self.property_id[i]
+            dictpart_property[self.part_id[i]] = self.property_id[i]
             # 可以使用材料的id，因为materials.json和parts.json里面都有对应的material 的id
-            string_F += '_F(MAILLE=\'%s\',MATER=\'%s\',' % (self.part_id[i], self.material_id[i])
+            # 可能对多个part添加同一种材料，所以使用GROUP_MA,格式为：GROUP_MA = ('EAU',  'COUPLEAU',),(GROUP_MA是parts的id)
+            ###############################
+            # 但是对于json文件里的数据，即使有上述情况，也会分开写，此处需要考虑合并材料相同的part
+            string_F += '_F(GROUP_MA=\'%s\',MATER=\'%s\',' % (self.part_id[i], self.material_id[i])
         yield '%s=AFFE_MATERIAL(MAILLAGE=%s,AFFE=(%s),);' % \
               (AssignMaterialName[0], MeshName[0], string_F)
 
-# 加入模型property，对应aster关键词为DEFI_MATERIAU。
-class AssignModel(object):
+# 加入模型property，对应aster关键词为AFFE_MODELE。
+# 模型可能有多个，例如3D固体连续不可以和Shell写在同一个模型里，因为后面对shell加入厚度时，需要调用这里创建的model
+class AssignProperty(object):
+    # modelname输入参数应该是一个列表，因为可能定义多个模型种类
     def __init__(self, fpathproperties, modelname):
         self.data = readdata(fpathproperties)
         self.property_type = []
         self.property_id = []
         self.property_name = []
         ModelName.append(modelname)
+        # 将用户创建的模型名称输入到全局变量ModelName里来，后面加载荷与边界条件/计算等都需要调用模型名称
+        # 当PHENOMENON不是力学时在此处加上判断语句
         self.phenomenon = 'MECANIQUE'
-
-    def output(self):
-        string_F = ''
-        dictproperty_type = {}
-        for i in range(0,len(self.data)):
+        for i in range(0, len(self.data)):
             self.property_type.append(str(self.data[i]['attributes']['TYPE']))
             self.property_id.append(str(self.data[i]['id']))
             # 建立一个property_id和property_type之间的字典，part对应property，property再对应type
+            # 为了后面不再进行遍历多次来判定属性种类，此处就进行划分，创建不同的模型对应的id的列表
+            # 如Shell模型可能创建多次（因为可能定义不同的厚度）
             dictproperty_type[self.property_id[i]] = self.property_type[i]
-        for key, value in dictpartproperty.items():
-            # 当property种类不同时需要增加其他的判断语句
-            if dictproperty_type[dictpartproperty[key]] == 'SOLID':
-                string_F += '_F(MAILLE=\'%s\',PHENOMENE=\'%s\',MODELISATION=\'3D\',' % (key, self.phenomenon)
-        yield '%s=AFFE_MODELE(MAILLAGE=%s,AFFE=(%s),);' % (ModelName[0], MeshName[0], string_F)
 
-#class AssignBoundaryConditions(object):
+    def output(self):
+        string_F = ''
+        for key, value in dictpart_property.items():
+            if dictproperty_type[value] == 'SOLID':
+                # 对于3D固体连续介质，除了关键词‘3D’，还有‘3D_SI’
+                string_F += '_F(GROUP_MA=\'%s\',PHENOMENE=\'%s\',MODELISATION=\'3D\',' \
+                            % (key, self.phenomenon)
+            if dictproperty_type[value] == 'SHELL':
+                # 在3D模型中（此处也称为2.5D模型），需要对相应模型施加厚度参数
+                #             # 对于Shell模型，对应的关键词因子为‘COQUE_3D’；
+                #             # 对于板模型，有DKT,DST,Q4G,DKTG,Q4GG五种;
+                #             # 对于薄膜模型，对应为 ‘MEMBRANE’
+                string_F += '_F(GROUP_MA=\'%s\',PHENOMENE=\'%s\',MODELISATION=\'COQUE_3D\',' \
+                                 % (key, self.phenomenon)
+        yield '%s=AFFE_MODELE(MAILLAGE=%s,AFFE=(%s),);' % (ModelName[0], MeshName[0], string_F)
+    # 可能需要输出多个模型语句（创建了多个不同属性的模型），需要写不同的方法来定义不同种类模型
+
+
+# 添加额外的property，例如Shell结构的厚度，aster将其分开到另外一个语句里了
+class AssignPropertyAdditional(object):
+    def __init__(self, fpathproperties):
+        pass
+
+
+# 添加边界条件
+class AssignBoundaryConditions(object):
+    def __init__(self, fpathboundaryConditions, boundaryconditionsname):
+        BoundaryConditionsName.append(boundaryconditionsname)
+        self.data = readdata(fpathboundaryConditions)
+        self.bc_data = []
+        self.bc_id = []
+        self.bc_method = []
+
+    def output(self):
+
 
 
 class CreateCommand(object):
@@ -118,7 +158,7 @@ class CreateCommand(object):
         self.add_BulkCard(AssignMaterial(fpathparts, assignmaterialname))
 
     def add_assignmodel(self, fpathproperties, modelname):
-        self.add_BulkCard(AssignModel(fpathproperties, modelname))
+        self.add_BulkCard(AssignProperty(fpathproperties, modelname))
 
     def write(self, fpath):
         with open(fpath, 'w') as fp:
@@ -133,7 +173,8 @@ def addcommand():
     commandmodel.add_readmesh('mesh')
     commandmodel.add_definematerial('/home/ygfrancois/simright_dev/model_inp_vs_json/json/materials.json')
     commandmodel.add_assignmaterial('/home/ygfrancois/simright_dev/model_inp_vs_json/json/parts.json', 'assmat')
-    commandmodel.add_assignmodel('/home/ygfrancois/simright_dev/model_inp_vs_json/json/properties.json', 'model')
+    commandmodel.add_assignmodel('/home/ygfrancois/simright_dev/model_inp_vs_json/json/properties.json',
+                                 'model1')
     return commandmodel
 
 
