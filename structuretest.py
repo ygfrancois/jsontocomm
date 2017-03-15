@@ -132,8 +132,36 @@ class AssignBoundaryConditions(object):
         self.bc_id = []
         self.bc_method = []
 
-    def output(self):
+        self.bc_entities = []
+        self.bc_values = []
 
+        self.encastre = dict()
+
+        self.string_node_xyz = ''
+        for i in range(0, len(self.data)):
+            self.bc_data.append(self.data[i]['bcdata'])
+            self.bc_id.append(self.data[i]['id'])
+            self.bc_method.append(self.data[i]['method'])
+        for i in range(0, len(self.data)):
+            for j in range(0, len(self.bc_data[i])):
+                self.bc_entities.append(self.bc_data[i][j]['entities'])
+                self.bc_values.append(self.bc_data[i][j]['values'])
+                # 加入旋转角度时需要修改此处代码
+                if '1' and '2' and '3' in self.bc_values[j]:
+                    self.encastre.setdefault('xyz', list()).append(self.bc_entities[j])
+                    # list 里包含xyz都固定的点或者点集的字典 如"nodes": ["8"]
+        for nodes in self.encastre['xyz']:
+            for node in nodes['nodes']:
+                self.string_node_xyz += '\'%s\',' % node
+
+    def output(self):
+        string_F = ''
+        for key, value in self.encastre.items():
+            if key == 'xyz':
+                # 这里只用于单个点，如果有点集需要修改
+                string_F += '_F(NOEUD=(%s),DX=0.,DY=0.,DZ=0.,),' \
+                            % self.string_node_xyz
+        yield '%s=AFFE_CHAR_MECA(MODELE=%s,DDL_IMPO=(%s),);' % (BoundaryConditionsName[0], ModelName[0], string_F)
 
 
 class CreateCommand(object):
@@ -160,6 +188,9 @@ class CreateCommand(object):
     def add_assignmodel(self, fpathproperties, modelname):
         self.add_BulkCard(AssignProperty(fpathproperties, modelname))
 
+    def add_assignboundaryconditions(self, fpathboundaryConditions, boundaryconditionsname):
+        self.add_BulkCard(AssignBoundaryConditions(fpathboundaryConditions, boundaryconditionsname))
+
     def write(self, fpath):
         with open(fpath, 'w') as fp:
             fp.write('DEBUT' + '\n')
@@ -175,6 +206,8 @@ def addcommand():
     commandmodel.add_assignmaterial('/home/ygfrancois/simright_dev/model_inp_vs_json/json/parts.json', 'assmat')
     commandmodel.add_assignmodel('/home/ygfrancois/simright_dev/model_inp_vs_json/json/properties.json',
                                  'model1')
+    commandmodel.add_assignboundaryconditions\
+    ('/home/ygfrancois/simright_dev/model_inp_vs_json/json/boundaryConditions.json', 'bc')
     return commandmodel
 
 
