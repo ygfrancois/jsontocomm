@@ -1,9 +1,11 @@
 # coding=utf-8
 import json
 MeshName = []
+MaterialName = []
 AssignMaterialName =[]
 ModelName = []
 BoundaryConditionsName = []
+LoadsName = []
 # 两个字典各自的对应关系对于一个模型是不变的，所以可以设为全局变量，方便调用
 dictpart_property = {}
 dictproperty_type = {}
@@ -33,7 +35,8 @@ class DefineMaterial(object):
     def __init__(self, fpathmaterials):
         self.data = readdata(fpathmaterials)
         self.typemat = []
-        self.material_id = []
+        # 直接把材料的id加入材料名称的list里，调用材料时调用id即可。
+        # self.material_id = []
         self.materialname = []
 
     def output(self):
@@ -41,11 +44,11 @@ class DefineMaterial(object):
             # 把材料的名称读进materialname，此处还有材料id没用上，后面索引可能会用
             # self.materialname.append(self.data[i]['name'])
             # 注：material.json里的材料名称不一定能被python接受，所以需要用id
-            self.material_id.append(self.data[i]['id'])
+            MaterialName.append(self.data[i]['id'])
             if self.data[i]['attributes'].keys() == ["ELASTIC_MODULUS", "POISSON_RATIO"]:
                 self.typemat.append("ELAS")
             yield '%s=DEFI_MATERIAU(%s=_F(E=%f,NU=%f,),);' % \
-                (self.material_id[i], self.typemat[i], self.data[i]['attributes'].values()[0],
+                (MaterialName[i], self.typemat[i], self.data[i]['attributes'].values()[0],
                     self.data[i]['attributes'].values()[1])
 
 
@@ -128,41 +131,83 @@ class AssignBoundaryConditions(object):
     def __init__(self, fpathboundaryConditions, boundaryconditionsname):
         BoundaryConditionsName.append(boundaryconditionsname)
         self.data = readdata(fpathboundaryConditions)
-        self.bc_data = []
-        self.bc_id = []
-        self.bc_method = []
+        self.bcs_data = []
+        self.bcs_id = []
+        self.bcs_method = []
 
-        self.bc_entities = []
-        self.bc_values = []
+        self.bcs_entities = []
+        self.bcs_values = []
 
-        self.encastre = dict()
+        self.dict_boundaryconditions = dict()
 
         self.string_node_xyz = ''
         for i in range(0, len(self.data)):
-            self.bc_data.append(self.data[i]['bcdata'])
-            self.bc_id.append(self.data[i]['id'])
-            self.bc_method.append(self.data[i]['method'])
+            self.bcs_data.append(self.data[i]['bcdata'])
+            self.bcs_id.append(self.data[i]['id'])
+            self.bcs_method.append(self.data[i]['method'])
         for i in range(0, len(self.data)):
-            for j in range(0, len(self.bc_data[i])):
-                self.bc_entities.append(self.bc_data[i][j]['entities'])
-                self.bc_values.append(self.bc_data[i][j]['values'])
-                # 加入旋转角度时需要修改此处代码
-                if '1' and '2' and '3' in self.bc_values[j]:
-                    self.encastre.setdefault('xyz', list()).append(self.bc_entities[j])
+            for j in range(0, len(self.bcs_data[i])):
+                self.bcs_entities.append(self.bcs_data[i][j]['entities'])
+                self.bcs_values.append(self.bcs_data[i][j]['values'])
+                # 加入旋转角度或者不是三个方向都固定时时需要修改此处代码
+                if len(self.bcs_values[j]) == 3 and \
+                        '1' and '2' and '3' in self.bcs_values[j]:
+                    self.dict_boundaryconditions.setdefault('xyz', list()).append(self.bcs_entities[j])
                     # list 里包含xyz都固定的点或者点集的字典 如"nodes": ["8"]
-        for nodes in self.encastre['xyz']:
-            for node in nodes['nodes']:
-                self.string_node_xyz += '\'%s\',' % node
+        # 此处也待添加
+        nb_node_xyz = 0
+        for item in self.dict_boundaryconditions['xyz']:
+            if 'nodes' in item.keys():
+                for node in item['nodes']:
+                    if nb_node_xyz % 7 == 0:
+                        self.string_node_xyz += '\n'
+                    self.string_node_xyz += '\'%s\',' % node
+                    nb_node_xyz += 1
 
     def output(self):
         string_F = ''
-        for key, value in self.encastre.items():
+        for key, value in self.dict_boundaryconditions.items():
             if key == 'xyz':
                 # 这里只用于单个点，如果有点集需要修改
                 string_F += '_F(NOEUD=(%s),DX=0.,DY=0.,DZ=0.,),' \
                             % self.string_node_xyz
         yield '%s=AFFE_CHAR_MECA(MODELE=%s,DDL_IMPO=(%s),);' % (BoundaryConditionsName[0], ModelName[0], string_F)
 
+
+class AssignLoads(object):
+    def __init__(self, fpathloads, loadsname):
+        LoadsName.append(loadsname)
+        self.data = readdata(fpathloads)
+        self.loads_data = []
+        self.loads_id = []
+        self.loads_method = []
+
+        self.string_F = ''
+        for i in range(0, len(self.data)):
+            self.loads_data.append(self.data[i]['loaddata'])
+            self.loads_id.append(self.data[i]['id'])
+            self.loads_method.append(self.data[i]['method'])
+        for i in range(0, len(self.data)):
+            for j in range(0, len(self.loads_data[i])):
+                loads_entities = self.loads_data[i][j]['entities']
+                loads_values = self.loads_data[i][j]['values']
+                # 加入扭矩时增加条件
+                if len(loads_values) == 3 and \
+                        '1' and '2' and '3' in loads_values:
+                    # 除了nodes，可能有别的点集
+                    if 'nodes' in loads_entities.keys():
+                        # 可能有多个node
+                        for node in loads_entities['nodes']:
+                            self.string_F += '_F(NOEUD=(\'%s\'),FX=%f.,FY=%f,FZ=%f.,),' \
+                            % (node, loads_values['1'],
+                               loads_values['2'], loads_values['3'])
+
+    def output(self):
+        yield '%s=AFFE_CHAR_MECA_F(MODELE=%s,FORCE_NODALE=(%s),);' % (LoadsName[0], ModelName[0], self.string_F)
+
+
+class Calculation(object):
+    def __init__(self, fpathloadsteps, calculationname):
 
 class CreateCommand(object):
     def __init__(self):
@@ -191,6 +236,9 @@ class CreateCommand(object):
     def add_assignboundaryconditions(self, fpathboundaryConditions, boundaryconditionsname):
         self.add_BulkCard(AssignBoundaryConditions(fpathboundaryConditions, boundaryconditionsname))
 
+    def add_assignloads(self, fpathloads, loadsname):
+        self.add_BulkCard(AssignLoads(fpathloads, loadsname))
+
     def write(self, fpath):
         with open(fpath, 'w') as fp:
             fp.write('DEBUT' + '\n')
@@ -208,6 +256,7 @@ def addcommand():
                                  'model1')
     commandmodel.add_assignboundaryconditions\
     ('/home/ygfrancois/simright_dev/model_inp_vs_json/json/boundaryConditions.json', 'bc')
+    commandmodel.add_assignloads('/home/ygfrancois/simright_dev/model_inp_vs_json/json/loads.json', 'force')
     return commandmodel
 
 
